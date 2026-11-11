@@ -1,0 +1,124 @@
+(ns z80.io-bus
+  (:require [z80.vdp :as vdp]
+            [z80.memory :as memory]
+            [z80.joypads :as joypads])
+  (:import [com.codingrodent.microprocessor IMemory IBaseDevice]
+           [com.codingrodent.microprocessor.Z80 Z80Core]))
+
+;; NOTE: A complete IO Port Map can be found here: https://www.smspower.org/Development/IOPortMap
+
+(defn- do-vdp-io-read!
+  "This function is programmed to be as generic as possible.
+   However, in practice it calls either vdp/read-status-port! or vdp/data-read! (the two VDP io reading functions).
+   Puts the VDP in a new state and returns the result byte that these read functions return."
+  [^z80.vdp.VdpState atom-vdp read-fn & args]
+  (let [result (atom nil)]
+    (swap! atom-vdp (fn [vdp]
+                      (let [[val updated-vdp] (apply read-fn vdp args)]
+                        (reset! result val)
+                        updated-vdp)))
+    @result))
+
+;; This latch is needed for Language detection.
+;; Just to clarify the naming: A latch is a specialized, temporary data storage mechanism.
+;; The Master System region detection resembles a handshake. A game trying to detect the console's region
+;; will first write data to port 0x3F and then read corresponding data from port 0xDD.
+;; Keep in mind: The final two bits from the JoyPad-2 byte (b6 and b7) are also used for region detection.
+
+(def ^:private port-3f-latch (atom 0xFF))
+
+;; Define atoms to hold the state of the Game Gear Link cable system.
+;; Some GG games need to check these on startup (for example Puyo Puyo 2).
+(def gg-port-01 (atom 0x00)) ;; Parallel Data
+(def gg-port-02 (atom 0xFF)) ;; Data Direction (Usually defaults to inputs/0xFF)
+(def gg-port-03 (atom 0x00)) ;; Transmit Control
+(def gg-port-04 (atom 0xFF)) ;; Receive Status (0xFF implies disconnected/idle)
+(def gg-port-05 (atom 0x00)) ;; Serial Control
+
+;; --- SEGA MASTER SYSTEM I/O BUS ---
+;; SMS components like Video (VDP) and Joypads are hooked up to the ports here.
+
+(defn make-io-bus
+  "Returns a complete I/O device object that can be used by Z80Core to compose a CPU object.
+  The CPU object shuld be able to read-from/write-to the I/O addresses defined here."
+  [^Z80Core cpu ^z80.vdp.VdpState active-vdp]
+  (reify IBaseDevice
+    (^int IORead [this ^int address]
+      (let [port (memory/signed->unsigned address)
+            ;; Decode ports by their upper 2 bits (4 main blocks)
+            port-group (bit-and port 2r11000000)] 
+        (cond
+          ;; --- Group 0x00 to 0x3F --- (0x00 is 2r00000000)
+          (= port-group 0x00)
+          (cond
+            (= port 0x00) (joypads/read-gg-start-button) ;; Port $00 is used for the Game Gear START button.
+            ;; --- These ports control the Gear-to-Gear Link Cable 
+            (= port 0x01) @gg-port-01
+            (= port 0x02) @gg-port-02
+            (= port 0x03) @gg-port-03
+            (= port 0x04) @gg-port-04
+            (= port 0x05) @gg-port-05
+            :else 0xFF)
+
+          ;; --- Group 0x40 to 0x7F --- (0x40 is 2r01000000)
+          (= port-group 0x40)
+          (if (even? port)
+            ;; NOTE: The v-counter is basically the current scan-line
+            ;; The h-counter is the current pixel within that scan-line
+            (vdp/get-v-counter @active-vdp) ;; Even ports ($40-$7E) = V-Counter
+            (vdp/calculate-h-counter @cpu)) ;; Odd ports ($41-$7F)  = H-Counter
+
+          ;; --- Group 0x80 to 0xBF --- (0x80 is 2r10000000)
+          (= port-group 0x80)
+          (if (even? port)
+            ;; VDP DATA PORT ($BE)
+            (do-vdp-io-read! active-vdp vdp/data-read!)
+            ;; VDP STATUS PORT ($BF)
+            (do-vdp-io-read! active-vdp vdp/read-status-port! @cpu))
+
+          ;; --- Group 0xC0 to 0xFF --- (0xC0 is 2r11000000)
+          (= port-group 0xC0)
+          (if (even? port)
+            (joypads/read-joypad1) ;; Even ports ($DC) = P1 Input
+            ;; Odd ports ($DD) = P2 Input + Region/Video Bits
+            (let [joy2 (joypads/read-joypad2)]
+              (cond
+                ;; Game expects Japanese/NTSC response when it writes 0x55
+                (= @port-3f-latch 0x55)
+                (bit-and joy2 2r00111111) ;; Force Bits 6 and 7 to 0
+
+                ;; Game expects Export/PAL response when it writes 0xF5
+                (= @port-3f-latch 0xF5)
+                (bit-or joy2 2r11000000)  ;; Force Bits 6 and 7 to 1
+
+                ;; Default fallback
+                :else (bit-and joy2 2r00111111))))
+
+          :else 0xFF)))
+
+    (^void IOWrite [this ^int address ^int data]
+      (let [port (memory/signed->unsigned address)
+            port-group (bit-and port 2r11000000)]
+        (cond
+          ;; Intercept writes to Port $3F (System / I/O Control).
+          ;; This is needed for any game trying to test the console region.
+          (and (= port-group 0x00) (= port 0x3F)) (reset! port-3f-latch data)
+
+          ;; --- These ports control the Gear-to-Gear Link Cable 
+          (= port 0x01) (reset! gg-port-01 data)
+          (= port 0x02) (reset! gg-port-02 data)
+          (= port 0x03) (reset! gg-port-03 data)
+          ;; Note: Port 0x04 is generally read-only status, but some games write to reset flags
+          (= port 0x04) (reset! gg-port-04 data) 
+          (= port 0x05) (reset! gg-port-05 data)
+
+          ;; VDP Writes ($80-$BF)
+          ;; NOTE: port 0xBF pulls double duty depending on whether the Z80 CPU is writing to it or reading from it.
+          ;; When reading, it serves as the status port. When writing it is the control port.
+          (= port-group 0x80)
+          (if (even? port)
+            ;; Port ($BE) VDP Data Write.
+            (swap! active-vdp vdp/data-write! (memory/unsigned->signed data))
+            ;; Port ($BF) VDP Control Write.
+            (swap! active-vdp vdp/control-write! data)))
+        nil))))
