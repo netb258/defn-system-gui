@@ -103,7 +103,7 @@
   (md5-hash @rom))
 
 ;; NOTE: We are using delay, because we want to wait for the @rom to be loaded by load-rom-into-memory!
-(def ^:private sram-file-path (delay (str "./battery-saves/" (get-rom-md5-hash) ".sav")))
+(def ^:private sram-file-path (delay (str (get-rom-md5-hash) ".sav")))
 
 ;; Standard SMS Cartridge RAM is usually 8KB or 16KB.
 ;; However, some Game Gear games come with 32KB of SRAM (for example Shining Force).
