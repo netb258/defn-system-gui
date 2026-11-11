@@ -1,0 +1,40 @@
+{:fps 60
+ ;; If :show-fps? is set to true, then all shaders should be set to nil.
+ :show-fps? false
+ ;; 1   = Normal CPU speed.
+ ;; 1.5 = 150% CPU speed.
+ ;; 2   = 200% CPU speed.
+ :overclock-factor 1
+ ;; -----------------------
+ ;; ------- Graphics ------
+ ;; -----------------------
+ :sms-bilinear-filtering? false
+ :gg-bilinear-filtering?  true
+ ;; NOTE: If this is set to true, then :sms-height should be 224. Then the overscan will be visible.
+ :show-sms-border? false
+ :remove-8-sprite-limit? true
+ :sms-shader "./shaders/crt-light.glsl"
+ :gg-shader  "./shaders/crt-game-gear.glsl"
+ ;; -----------------------
+ ;; ----- Screen Size -----
+ ;; -----------------------
+ :sms-scale 5
+ :gg-scale 7
+ ;; Original Master System dimensions: 256x192.
+ :sms-width 256
+ :sms-height 192
+ ;; Original Game Gear dimensions: 160x144.
+ :gg-width 160
+ :gg-height 140 ;; NOTE: This should be 144, but the screen is too high with 144.
+ ;; -----------------------
+ ;; ------- Debugging -----
+ ;; -----------------------
+ :enable-vram-viewer?    false
+ :enable-tilemap-viewer? false
+ :vram-viewer-scale    4
+ :tilemap-viewer-scale 3
+ ;; -----------------------
+ ;; ---- ROMS Directory ---
+ ;; -----------------------
+ :sms-roms-dir "D:\\Sega\\Master System"
+ :gg-roms-dir "D:\\Sega\\GameGear"}
