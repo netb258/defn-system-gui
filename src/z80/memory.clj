@@ -103,7 +103,7 @@
   (md5-hash @rom))
 
 ;; NOTE: We are using delay, because we want to wait for the @rom to be loaded by load-rom-into-memory!
-(def ^:private sram-file-path (delay (str (get-rom-md5-hash) ".sav")))
+(def ^:private sram-file-path (delay (str "./battery-saves/" (get-rom-md5-hash) ".sav")))
 
 ;; Standard SMS Cartridge RAM is usually 8KB or 16KB.
 ;; However, some Game Gear games come with 32KB of SRAM (for example Shining Force).
@@ -328,12 +328,17 @@
               (= address 0xFFFF) (swap! mapper-banks assoc :slot2 value)))))
       nil)
 
+    ;; NOTE: In both readWord and writeWord we are making sure addresses are exactly 16 bits.
     (^int readWord [this ^int address]
-      (let [low (.readByte this address)
-            high (.readByte this (inc address))]
+      (let [addr (bit-and address 2r1111111111111111)
+            next-addr (bit-and (inc address) 2r1111111111111111)
+            low (.readByte this addr)
+            high (.readByte this next-addr)]
         (bit-or low (bit-shift-left high 8))))
 
     (^void writeWord [this ^int address ^int value]
-      (.writeByte this address (signed->unsigned value))
-      (.writeByte this (inc address) (signed->unsigned (bit-shift-right value 8)))
-      nil)))
+      (let [addr (bit-and address 2r1111111111111111)
+            next-addr (bit-and (inc address) 2r1111111111111111)]
+        (.writeByte this addr (signed->unsigned value))
+        (.writeByte this next-addr (signed->unsigned (unsigned-bit-shift-right value 8)))
+        nil))))
