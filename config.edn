@@ -24,8 +24,10 @@
  :sms-width 256
  :sms-height 192
  ;; Original Game Gear dimensions: 160x144.
- :gg-width 160
- :gg-height 140 ;; NOTE: This should be 144, but the screen is too high with 144.
+ ;; NOTE: 160x144 is the internal GG resolution (almost square).
+ ;; However, the physical GG screen stretches it out to a 4:3 ratio.
+ :gg-width 256
+ :gg-height 192
  ;; -----------------------
  ;; ------- Debugging -----
  ;; -----------------------
