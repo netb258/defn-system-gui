@@ -19,7 +19,7 @@
  ;; ----- Screen Size -----
  ;; -----------------------
  :sms-scale 5
- :gg-scale 7
+ :gg-scale 5
  ;; Original Master System dimensions: 256x192.
  :sms-width 256
  :sms-height 192
