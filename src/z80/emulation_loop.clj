@@ -72,31 +72,39 @@
 
     (dotimes [scanline total-lines-per-frame]
       (let [start-tstates (.getTStates cpu)
-            ;; Phase 1 target: Run active display up to the H-Blank trigger point
-            hblank-trigger-tstates (+ start-tstates (* 200 overclock-factor))
-            ;; Phase 2 target: Complete the full 228 cycles for this line
-            end-of-line-tstates (+ start-tstates cycles-per-line)]
+            target-tstates (+ start-tstates cycles-per-line)]
 
         ;; Keep VDP state synchronized with the current horizontal scan-line.
         (swap! vdp-atom assoc :current-scan-line scanline)
 
-        ;; --- PHASE 1: ACTIVE DISPLAY ---
-        ;; Check for any interrupts already pending from previous events
+        ;; Contrary to intuition, the interrupts need to be fired before executing the CPU instructions.
+        ;; Notice that we are setting the interrupt line to true but never to false.
+        ;; The games themselves must clear the interrupt line when appropriate.
+        ;; The only way games can clear the interrupt line is by doing a VDP status port read.
         (let [vdp-state @vdp-atom
               vblank-asserted? (and (:vblank-active? vdp-state) (vblank-irq-enabled? vdp-state))
               hblank-asserted? (and (:hblank-active? vdp-state) (hblank-irq-enabled? vdp-state))]
           (when (or vblank-asserted? hblank-asserted?)
             (.setInterrupt cpu true)))
 
-        ;; Execute Z80 instructions up to the H-Blank trigger point (~cycle 200)
-        (loop []
-          (when (< (.getTStates cpu) hblank-trigger-tstates)
-            (.executeOneInstruction cpu)
-            (recur)))
+        ;; 1. PROCESS Z80 CPU INSTRUCTIONS FOR THIS SCANLINE
+        ;; Step the Z80 processor repeatedly until it consumes exactly 228 cycle T-states.
+        (while (< (.getTStates cpu) target-tstates)
+          (.executeOneInstruction cpu))
 
-        ;; --- PHASE 2: H-BLANK TRIGGER POINT ---
-        ;; We are now physically at the end of active display.
+        ;; 2. RUN LINE RENDERING FUNCTIONS
+        ;; Only render within the standard 224-line limit.
+        (when (< scanline visible-lines-plus-overscan)
+          ;; ALWAYS draw the background line. This ensures that when the system is in 192-line mode,
+          ;; lines 192 to 223 automatically drop into the overscan loop to draw a clean uniform border.
+          (display/draw-background-line! @vdp-atom frame-canvas scanline)
+          ;; ONLY compute foreground sprites and run collision grid checks during active video display lines
+          (when (< scanline visible-lines)
+            (display/draw-sprites-line! frame-canvas vdp-atom scanline remove-8-sprite-limit?)))
+
+        ;; 3. HANDLE H-BLANK
         ;; The VDP line counter decrements on every scanline up to 192.
+        ;; NOTE: Adapted the VDP counter logic from Zenga: https://github.com/friol/zenga/blob/main/js/smsVdp.js
         (if (<= scanline visible-lines)
           (let [current-count @line-interrupt-counter
                 new-count (dec current-count)]
@@ -109,40 +117,24 @@
                 ;; We have just processed a whole single scan-line with the loop above.
                 ;; So, we can trigger an interrupt to let the game know there is a short time
                 ;; before we snap back and process another scan-line.
-                (swap! vdp-atom assoc :hblank-active? true)
-                (when (hblank-irq-enabled? @vdp-atom)
-                  (.setInterrupt cpu true)))
-              ;; Decrement counter normally
+                (swap! vdp-atom assoc :hblank-active? true))
+              ;; Else decrement counter normally.
               (reset! line-interrupt-counter new-count)))
-          ;; Outside the 192 window, the counter continually reloads from Register 10.
+          ;; Outside the regular 192 window, the counter continually reloads from Register 10.
           (reset! line-interrupt-counter (get-vdp-reg10 @vdp-atom)))
 
-        ;; --- PHASE 3: HORIZONTAL BLANKING INTERVAL ---
-        ;; Execute the remaining 28 cycles of the scanline. 
-        ;; If an H-Blank interrupt was just triggered, the Z80 will service it right here.
-        (loop []
-          (when (< (.getTStates cpu) end-of-line-tstates)
-            (.executeOneInstruction cpu)
-            (recur)))
-
-        ;; RUN LINE RENDERING FUNCTIONS
-        ;; Only render within the standard 224-line limit.
-        (when (< scanline visible-lines-plus-overscan)
-          (display/draw-background-line! @vdp-atom frame-canvas scanline)
-          (when (< scanline visible-lines)
-            (display/draw-sprites-line! frame-canvas vdp-atom scanline remove-8-sprite-limit?)))
-
-        ;; HANDLE V-BLANK
-        ;; Trigger a VBlank on the last visible scanline, so that games have time to update
+        ;; 4. HANDLE V-BLANK
+        ;; Trigger a VBlank on the last visible scanline (192), so that games have time to update
         ;; before we go back to scanline 0 and start processing a new frame. This will be a significant pause.
         ;; This is the longest, most crucial synchronization event.
         ;; During V-BLANK the VRAM is fully accessible without disrupting the display.
         ;; Games use this window to: Update sprite positions (moving characters, enemies, projectiles),
         ;; Load new tile graphics into VDP memory and more.
         (when (= scanline visible-lines)
+          ;; NOTE: Reading the VDP status port is the only thing that clears :report-vblank-active?
           (swap! vdp-atom assoc :vblank-active? true :report-vblank-active? true))
 
-        ;; END OF FRAME
+        ;; 5. END OF FRAME
         ;; This is the very last scanline of the PAL cycle loop.
         (when (= scanline 312)
           (swap! vdp-atom assoc :vblank-active? false))))
